@@ -43,12 +43,10 @@ function App() {
     setUsername(decoded.username);
     setCurrentUserId(decoded.user_id);
 
-    // Charger les utilisateurs
     api.get('users/')
       .then(res => setUsers(res.data))
       .catch(console.error);
 
-    // Création du socket (si pas déjà existant)
     if (!socketRef.current) {
       const socket = new WebSocket(`ws://127.0.0.1:8000/ws/chat/?token=${token}`);
       socketRef.current = socket;
@@ -83,7 +81,6 @@ function App() {
             content: data.message,
             is_read: false
           };
-          // On vérifie par rapport à la ref pour avoir la valeur la plus récente
           if (newMessage.sender === selectedReceiverRef.current || newMessage.receiver === selectedReceiverRef.current) {
             setMessages((prev) => [...prev, newMessage]);
           }
