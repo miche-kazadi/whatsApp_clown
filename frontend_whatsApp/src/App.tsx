@@ -39,9 +39,10 @@ function App() {
     }
 
     const decoded = jwtDecode<DecodedToken>(token);
-    const userId = decoded.user_id;
     setUsername(decoded.username);
     setCurrentUserId(decoded.user_id);
+
+    const userIdFromToken = decoded.user_id;
 
     api.get('users/')
       .then(res => setUsers(res.data))
@@ -67,13 +68,24 @@ function App() {
         }
         
         else if (data.type === "message_read") {
+          console.log("DEBUG: Tentative de mise à jour");
+          console.log("DEBUG: Mon ID:", userIdFromToken);
+          console.log("DEBUG: Lecteur:", data.reader);
+          console.log("DEBUG: Nombre de messages en mémoire:", messages.length);
           console.log(`Mise à jour : lecture détectée par ${data.reader}`);
           setMessages((prev) =>
-            prev.map((msg) =>
-              Number(msg.sender) === Number(userId) ? { ...msg, is_read: true } : msg
-            )
+            prev.map((msg) => {
+              const isMyMessage = Number(msg.sender) === Number(userIdFromToken);
+              const isTargetReader = Number(msg.receiver) === Number(data.reader);
+
+              if (isMyMessage && isTargetReader) {
+                return { ...msg, is_read: true };
+              }
+              return msg;
+            })
           );
-        } else if (data.type === "message") {
+        } 
+        else if (data.type === "message") {
           const newMessage ={
             ...data ,
             sender: data.sender,
