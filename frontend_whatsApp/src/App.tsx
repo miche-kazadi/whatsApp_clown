@@ -3,16 +3,19 @@ import { useNavigate } from 'react-router-dom';
 import { jwtDecode } from 'jwt-decode';
 import api from './api';
 
+
+
+interface DecodedToken {
+  username: string;
+  user_id: number;
+}
+
 interface Message {
   id?: number;
   sender: number;
   receiver?: number;
   content: string;
-}
-
-interface DecodedToken {
-  username: string;
-  user_id: number;
+  is_read?: boolean; // <-- ajout
 }
 
 function App() {
@@ -28,7 +31,7 @@ function App() {
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const selectedReceiverRef = useRef<number | null>(null);
   const navigate = useNavigate();
-
+  const isInitialized = useRef(false);
   // Mettre à jour la ref quand l'état change
   useEffect(() => {
     if (selectedReceiver !== null) {
@@ -42,8 +45,10 @@ function App() {
       .then(res => setMessages(res.data))
       .catch(err => console.error("Erreur chargement messages", err));
   };
-
   useEffect(() => {
+    if (isInitialized.current) return; // Empêche le double appel
+    isInitialized.current = true;
+
     const token = localStorage.getItem('access_token');
     if (!token) {
       navigate('/login');
@@ -54,32 +59,68 @@ function App() {
     setUsername(decoded.username);
     setCurrentUserId(decoded.user_id);
 
-    api.get('users/').then(res => setUsers(res.data)).catch(console.error);
+    api.get('users/')
+      .then(res => setUsers(res.data))
+      .catch(console.error);
 
+    // création socket UNE SEULE FOIS
     socketRef.current = new WebSocket(`ws://127.0.0.1:8000/ws/chat/?token=${token}`);
+
+    socketRef.current.onopen = () => {
+      console.log("WebSocket connecté");
+    };
+
+    socketRef.current.onerror = (error) => {
+      console.log("Erreur WebSocket", error);
+    };
+
+    socketRef.current.onclose = () => {
+      console.log("WebSocket fermé");
+    };
+
     socketRef.current.onmessage = (event) => {
-      
+
       const data = JSON.parse(event.data);
-      console.log("Message reçu du socket :", data); 
+      console.log("Message reçu :", data);
 
       if (data.type === "typing") {
         setTypingUsers(data.sender);
-        setTimeout(() => setTypingUsers(null), 5000); 
-      } else {
+        setTimeout(() => setTypingUsers(null), 5000);
+      }
+
+      else if (data.type === "read") {
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.sender === currentUserId
+              ? { ...msg, is_read: true }
+              : msg
+          )
+        );
+      }
+
+      else if (data.type === "message") {
+
         const newMessage: Message = {
           sender: data.sender,
           receiver: data.receiver,
-          content: data.message
+          content: data.message,
+          is_read: false
         };
 
-        if (newMessage.sender === selectedReceiverRef.current || newMessage.receiver === selectedReceiverRef.current) {
+        if (
+          newMessage.sender === selectedReceiverRef.current ||
+          newMessage.receiver === selectedReceiverRef.current
+        ) {
           setMessages((prev) => [...prev, newMessage]);
         }
+
       }
+
     };
 
     return () => socketRef.current?.close();
-  }, [navigate]);
+
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -105,30 +146,17 @@ function App() {
       receiver: selectedReceiver
     }));
 
-    socketRef.current.onopen = () => {
-  console.log("WebSocket connecté");
-};
-
-socketRef.current.onerror = (error) => {
-  console.log("Erreur WebSocket", error);
-};
-
-socketRef.current.onclose = () => {
-  console.log("WebSocket fermé");
-    }; socketRef.current.onopen = () => {
-      console.log("WebSocket connecté");
-    };
-
-    socketRef.current.onerror = (error) => {
-      console.log("Erreur WebSocket", error);
-    };
-
-    socketRef.current.onclose = () => {
-      console.log("WebSocket fermé");
-    };
-
     setContent('');
   };
+
+  useEffect(() => {
+    if (selectedReceiver && socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify({
+        type: "read",
+        sender: selectedReceiver
+      }));
+    }
+  }, [selectedReceiver]);
 
   return (
     <div className="container-fluid vh-100 bg-light p-0">
@@ -188,7 +216,15 @@ socketRef.current.onclose = () => {
                       }`}
                     style={{ maxWidth: '70%' }}
                   >
+
                     {msg.content}
+
+                    {isMyMessage && (
+                      <span style={{ fontSize: "12px", marginLeft: "5px" }}>
+                        {msg.is_read ? "✔✔" : "✔"}
+                      </span>
+                    )}
+
                   </div>
                 </div>
               );
