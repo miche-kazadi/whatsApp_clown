@@ -3,8 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import { jwtDecode } from 'jwt-decode';
 import api from './api';
 
-
-
 interface DecodedToken {
   username: string;
   user_id: number;
@@ -15,7 +13,7 @@ interface Message {
   sender: number;
   receiver?: number;
   content: string;
-  is_read?: boolean; // <-- ajout
+  is_read?: boolean;
 }
 
 function App() {
@@ -31,24 +29,9 @@ function App() {
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const selectedReceiverRef = useRef<number | null>(null);
   const navigate = useNavigate();
-  const isInitialized = useRef(false);
-  // Mettre à jour la ref quand l'état change
-  useEffect(() => {
-    if (selectedReceiver !== null) {
-      loadConversation(selectedReceiver);
-    }
-    selectedReceiverRef.current = selectedReceiver;
-  }, [selectedReceiver]);
 
-  const loadConversation = (receiverId: number) => {
-    api.get(`messages/?receiver=${receiverId}`)
-      .then(res => setMessages(res.data))
-      .catch(err => console.error("Erreur chargement messages", err));
-  };
+  // 1. Initialisation : Auth, Users et WebSocket
   useEffect(() => {
-    if (isInitialized.current) return; // Empêche le double appel
-    isInitialized.current = true;
-
     const token = localStorage.getItem('access_token');
     if (!token) {
       navigate('/login');
@@ -59,88 +42,88 @@ function App() {
     setUsername(decoded.username);
     setCurrentUserId(decoded.user_id);
 
+    // Charger les utilisateurs
     api.get('users/')
       .then(res => setUsers(res.data))
       .catch(console.error);
 
-    // création socket UNE SEULE FOIS
-    socketRef.current = new WebSocket(`ws://127.0.0.1:8000/ws/chat/?token=${token}`);
+    // Création du socket (si pas déjà existant)
+    if (!socketRef.current) {
+      const socket = new WebSocket(`ws://127.0.0.1:8000/ws/chat/?token=${token}`);
+      socketRef.current = socket;
 
-    socketRef.current.onopen = () => {
-      console.log("WebSocket connecté");
-    };
+      socket.onopen = () => console.log("✅ WebSocket connecté");
+      socket.onerror = (error) => console.log("❌ Erreur WebSocket", error);
+      socket.onclose = () => console.log("⚠️ WebSocket fermé");
 
-    socketRef.current.onerror = (error) => {
-      console.log("Erreur WebSocket", error);
-    };
+      socket.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        console.log("Message reçu :", data);
 
-    socketRef.current.onclose = () => {
-      console.log("WebSocket fermé");
-    };
-
-    socketRef.current.onmessage = (event) => {
-
-      const data = JSON.parse(event.data);
-      console.log("Message reçu :", data);
-
-      if (data.type === "typing") {
-        setTypingUsers(data.sender);
-        setTimeout(() => setTypingUsers(null), 5000);
-      }
-
-      else if (data.type === "read") {
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.sender === currentUserId
-              ? { ...msg, is_read: true }
-              : msg
-          )
-        );
-      }
-
-      else if (data.type === "message") {
-
-        const newMessage: Message = {
-          sender: data.sender,
-          receiver: data.receiver,
-          content: data.message,
-          is_read: false
-        };
-
-        if (
-          newMessage.sender === selectedReceiverRef.current ||
-          newMessage.receiver === selectedReceiverRef.current
-        ) {
-          setMessages((prev) => [...prev, newMessage]);
+        if (data.type === "typing") {
+          setTypingUsers(data.sender);
+          setTimeout(() => setTypingUsers(null), 5000);
+        } else if (data.type === "read") {
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.sender === decoded.user_id ? { ...msg, is_read: true } : msg
+            )
+          );
+        } else if (data.type === "message") {
+          const newMessage: Message = {
+            sender: data.sender,
+            receiver: data.receiver,
+            content: data.message,
+            is_read: false
+          };
+          // On vérifie par rapport à la ref pour avoir la valeur la plus récente
+          if (newMessage.sender === selectedReceiverRef.current || newMessage.receiver === selectedReceiverRef.current) {
+            setMessages((prev) => [...prev, newMessage]);
+          }
         }
+      };
+    }
 
+    // On ne ferme pas le socket au démontage pour éviter les coupures intempestives en dev
+    // return () => socketRef.current?.close();
+  }, [navigate]);
+
+  // 2. Gestion du changement de contact
+  useEffect(() => {
+    if (selectedReceiver !== null) {
+      selectedReceiverRef.current = selectedReceiver;
+
+      // Charger l'historique
+      api.get(`messages/?receiver=${selectedReceiver}`)
+        .then(res => setMessages(res.data))
+        .catch(err => console.error("Erreur chargement messages", err));
+
+      // Marquer comme lu via WebSocket
+      if (socketRef.current?.readyState === WebSocket.OPEN) {
+        socketRef.current.send(JSON.stringify({
+          type: "read",
+          sender: selectedReceiver
+        }));
       }
+    }
+  }, [selectedReceiver]);
 
-    };
-
-    return () => socketRef.current?.close();
-
-  }, []);
-
+  // 3. Scroll automatique
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const handleLogout = () => {
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
-    navigate('/login');
-  };
-
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!selectedReceiver || !content.trim()) return;
 
-    if (!content.trim() || !socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
-      console.warn("Socket non disponible");
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      console.error("Le socket n'est pas prêt. État actuel :", socket?.readyState);
       return;
     }
 
-    socketRef.current.send(JSON.stringify({
+    socket.send(JSON.stringify({
       type: "message",
       message: content,
       receiver: selectedReceiver
@@ -149,30 +132,28 @@ function App() {
     setContent('');
   };
 
-  useEffect(() => {
-    if (selectedReceiver && socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify({
-        type: "read",
-        sender: selectedReceiver
-      }));
-    }
-  }, [selectedReceiver]);
+  const handleLogout = () => {
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('refresh_token');
+    if (socketRef.current) socketRef.current.close();
+    navigate('/login');
+  };
 
   return (
     <div className="container-fluid vh-100 bg-light p-0">
       <div className="row h-100 g-0">
         {/* SIDEBAR */}
-        <div className="col-md-4 col-lg-3 d-flex flex-column border-end bg-white">
+        <div className="col-md-4 col-lg-3 d-flex flex-column border-end bg-white shadow-sm">
           <div className="p-3 bg-dark text-white d-flex align-items-center justify-content-between">
             <h5 className="m-0">WhatsApp Clone</h5>
-            <small className="opacity-75">{username}</small>
+            <small className="badge bg-success">{username}</small>
           </div>
-          <div className="p-2 bg-light border-bottom text-muted small fw-bold text-uppercase">Contacts</div>
-          <div className="list-group list-group-flush overflow-auto">
+          <div className="p-2 bg-light border-bottom text-muted small fw-bold">CONTACTS</div>
+          <div className="list-group list-group-flush overflow-auto flex-grow-1">
             {users.map((user) => (
               <button
                 key={user.id}
-                className={`list-group-item list-group-item-action p-3 ${selectedReceiver === user.id ? 'active' : ''}`}
+                className={`list-group-item list-group-item-action p-3 border-0 ${selectedReceiver === user.id ? 'bg-primary text-white' : ''}`}
                 onClick={() => setSelectedReceiver(user.id)}
               >
                 <div className="d-flex align-items-center">
@@ -184,73 +165,61 @@ function App() {
               </button>
             ))}
           </div>
-          <div className="mt-auto p-3 border-top">
+          <div className="p-3 border-top bg-white">
             <button className="btn btn-outline-danger btn-sm w-100" onClick={handleLogout}>Déconnexion</button>
           </div>
         </div>
 
         {/* CHAT AREA */}
         <div className="col-md-8 col-lg-9 d-flex flex-column" style={{ backgroundColor: '#e5ddd5' }}>
-          <div className="p-3 bg-white shadow-sm border-bottom d-flex align-items-center">
-            <h6 className="m-0">Discussion avec : <strong>{users.find(u => u.id === selectedReceiver)?.username || "..."}</strong></h6>
-            <i className="bi bi-telephone-fill text-success" style={{ fontSize: '1.2rem' }}></i>
-          { typingUsers && (
-            <div style={{ fontSize: "12px", color: "gray" }}>
-              {typingUsers} est en train d'écrire...
+          {selectedReceiver ? (
+            <>
+              <div className="p-3 bg-white shadow-sm d-flex align-items-center justify-content-between">
+                <div>
+                  <h6 className="m-0">Discussion avec : <strong>{users.find(u => u.id === selectedReceiver)?.username}</strong></h6>
+                  {typingUsers && <small className="text-success anim-fade">{typingUsers} est en train d'écrire...</small>}
+                </div>
+              </div>
+
+              <div className="flex-grow-1 p-4 overflow-auto d-flex flex-column">
+                {messages.map((msg, index) => {
+                  const isMyMessage = Number(msg.sender) === Number(currentUserId);
+                  return (
+                    <div key={index} className={`d-flex mb-2 ${isMyMessage ? 'justify-content-end' : 'justify-content-start'}`}>
+                      <div className={`p-2 px-3 rounded-3 shadow-sm ${isMyMessage ? 'bg-success text-white' : 'bg-white text-dark'}`} style={{ maxWidth: '70%' }}>
+                        <div>{msg.content}</div>
+                        <div className="text-end" style={{ fontSize: '10px', marginTop: '2px' }}>
+                          {isMyMessage && (msg.is_read ? "✔✔" : "✔")}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+                <div ref={messagesEndRef} />
+              </div>
+
+              <form onSubmit={sendMessage} className="p-3 bg-white border-top d-flex gap-2">
+                <input
+                  className="form-control rounded-pill border-light bg-light px-4"
+                  placeholder="Tapez un message..."
+                  value={content}
+                  onChange={(e) => {
+                    setContent(e.target.value);
+                    if (socketRef.current?.readyState === WebSocket.OPEN && selectedReceiver) {
+                      socketRef.current.send(JSON.stringify({ type: "typing", receiver: selectedReceiver }));
+                    }
+                  }}
+                />
+                <button type="submit" className="btn btn-success rounded-circle shadow-sm" style={{ width: 45, height: 45 }}>
+                  <i className="bi bi-send-fill"></i>
+                </button>
+              </form>
+            </>
+          ) : (
+            <div className="h-100 d-flex align-items-center justify-content-center text-muted">
+              Sélectionnez un contact pour commencer à discuter
             </div>
           )}
-
-          </div>
-
-          
-
-          <div className="flex-grow-1 p-4 overflow-auto">
-            {messages.map((msg, index) => {
-              const isMyMessage = Number(msg.sender) === Number(currentUserId);
-              return (
-                <div key={index} className={`d-flex mb-2 ${isMyMessage ? 'justify-content-end' : 'justify-content-start'}`}>
-                  <div
-                    className={`p-3 rounded-4 shadow-sm position-relative ${isMyMessage
-                        ? 'bg-success text-white rounded-end-0'
-                        : 'bg-white text-dark rounded-start-0'
-                      }`}
-                    style={{ maxWidth: '70%' }}
-                  >
-
-                    {msg.content}
-
-                    {isMyMessage && (
-                      <span style={{ fontSize: "12px", marginLeft: "5px" }}>
-                        {msg.is_read ? "✔✔" : "✔"}
-                      </span>
-                    )}
-
-                  </div>
-                </div>
-              );
-            })}
-            <div ref={messagesEndRef} />
-          </div>
-
-          <form onSubmit={sendMessage} className="p-3 bg-light border-top d-flex gap-2">
-            <input
-              className="form-control rounded-pill border-0 shadow-sm px-4"
-              placeholder="Tapez un message..."
-              value={content}
-             onChange={(e) => {setContent(e.target.value);
-
-  if (socketRef.current?.readyState === WebSocket.OPEN && selectedReceiver) {
-    socketRef.current.send(JSON.stringify({
-      type: "typing",
-      receiver: selectedReceiver
-    }));
-  }
-}}
-            />
-            <button type="submit" className="btn btn-success rounded-circle shadow-sm" style={{ width: 45, height: 45 }}>
-              <i className="bi bi-send-fill"></i> {/* Icône avion */}
-            </button>
-          </form>
         </div>
       </div>
     </div>
@@ -258,4 +227,3 @@ function App() {
 }
 
 export default App;
-

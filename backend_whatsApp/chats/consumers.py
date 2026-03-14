@@ -23,26 +23,45 @@ def db_mark_messages_as_read(receiver, sender_id):
 def db_save_message(sender, receiver_id, content):
     return Message.objects.create(sender=sender, receiver_id=receiver_id, content=content)
 
+@database_sync_to_async
+def get_user_from_token(token_string):
+    try:
+        print(f"DEBUG: Tentative de validation du token: {token_string[:10]}...")
+        access_token = AccessToken(token_string)
+        user = User.objects.get(id=access_token['user_id'])
+        print(f"DEBUG: Utilisateur trouvé: {user.username}")
+        return user
+    except Exception as e:
+        print(f"DEBUG: Échec validation token: {str(e)}")
+        return None
+
 # --- CLASSE CONSUMER ---
 class ChatConsumer(AsyncWebsocketConsumer):
     
     async def connect(self):
-        # 1. Extraire le token
-        await self.accept()
-        query_string = self.scope['query_string'].decode()
-        params = parse_qs(query_string)
-        token = params.get('token', [None])[0]
+        try:
+            query_string = self.scope['query_string'].decode()
+            params = parse_qs(query_string)
+            token = params.get('token', [None])[0]
 
-        # 2. Valider le token
-        user = await get_user_from_token(token)
-        
-        if user and user.is_authenticated:
-            self.user = user
-            self.room_group_name = f"user_{self.user.id}"
-            await self.channel_layer.group_add(self.room_group_name, self.channel_name)
-            print(f"Connexion établie pour : {self.user.username}")
-        else:
-            print("DEBUG: Connexion refusée (token invalide)")
+
+            if token and token.startswith('Bearer '):
+                token = token.split(' ')[1]
+            # 2. Valider le token
+            user = await get_user_from_token(token)
+            
+            if user and user.is_authenticated:
+                self.user = user
+                self.room_group_name = f"user_{self.user.id}"
+                await self.channel_layer.group_add(self.room_group_name, self.channel_name)
+            
+                await self.accept()
+                print(f"DEBUG: Connexion etabli {self.user.username} ")
+            else:
+                print("DEBUG: Connexion refusée (token invalide)")
+                await self.close()
+        except Exception as e:
+            print(f"ERREUR CRITIQUE CONNECT: {e}")
             await self.close()
 
     async def disconnect(self, close_code):
@@ -67,6 +86,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     payload = {"type": "chat_message", "message": message, "sender": self.user.id, "receiver": receiver_id}
                     await self.channel_layer.group_send(f"user_{receiver_id}", payload)
                     await self.channel_layer.group_send(f"user_{self.user.id}", payload)
+                    print(f"DEBUG: Message recu du frontent {self.user.username} : {text_data}")
+                try:
+                    data = json.loads(text_data)
+                    print(f"DEBUG: Payload reçu pour message: {data}")
+                except Exception as e:
+                    print(f"DEBUG: Erreur lors de l'envoi du payload: {e}")
 
             elif event_type == "read":
                 sender_id = data.get("sender")
@@ -84,7 +109,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
     # --- GESTIONNAIRES D'ÉVÉNEMENTS ---
     async def chat_message(self, event):
-        await self.send(text_data=json.dumps({"type": "message", **event}))
+        await self.send(text_data=json.dumps({
+            "type": "message",
+            "message": event["message"],
+            "sender": event["sender"],
+            "receiver": event["receiver"]
+        }))
 
     async def typing_event(self, event):
         await self.send(text_data=json.dumps({"type": "typing", **event}))
