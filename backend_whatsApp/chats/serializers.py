@@ -7,7 +7,7 @@ class MessageSerialiser(serializers.ModelSerializer):
    
     class Meta:
         model = Message
-        fields = ['id', 'sender', 'receiver', 'content', 'timestamp', 'sender_username', 'receiver_username']
+        fields = ['id', 'sender', 'receiver', 'content', 'timestamp', 'sender_username', 'receiver_username', 'is_read']
         # Ajoute cette ligne pour que le 'sender' soit géré par le backend
         read_only_fields = ['sender', 'timestamp']
 
