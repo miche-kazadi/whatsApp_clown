@@ -39,6 +39,7 @@ function App() {
     }
 
     const decoded = jwtDecode<DecodedToken>(token);
+    const userId = decoded.user_id;
     setUsername(decoded.username);
     setCurrentUserId(decoded.user_id);
 
@@ -58,19 +59,25 @@ function App() {
 
       socket.onmessage = (event) => {
         const data = JSON.parse(event.data);
+        console.log("État actuel de messages :", messages);
         console.log("Message reçu :", data);
 
-        if (data.type === "typing") {
+        if (data.type === "typing_event") {
+          console.log("Mise à jour des traits : lecture détectée");
           setTypingUsers(data.sender);
-          setTimeout(() => setTypingUsers(null), 5000);
-        } else if (data.type === "read") {
+          setTimeout(() => setTypingUsers(null), 20000);
+        }
+        
+        else if (data.type === "message_read") {
+          console.log(`Mise à jour : lecture détectée par ${data.reader}`);
           setMessages((prev) =>
             prev.map((msg) =>
-              msg.sender === decoded.user_id ? { ...msg, is_read: true } : msg
+              Number(msg.sender) === Number(userId) ? { ...msg, is_read: true } : msg
             )
           );
         } else if (data.type === "message") {
-          const newMessage: Message = {
+          const newMessage ={
+            ...data ,
             sender: data.sender,
             receiver: data.receiver,
             content: data.message,
@@ -99,7 +106,7 @@ function App() {
         .catch(err => console.error("Erreur chargement messages", err));
 
       // Marquer comme lu via WebSocket
-      if (socketRef.current?.readyState === WebSocket.OPEN) {
+      if (selectedReceiver && socketRef.current?.readyState === WebSocket.OPEN) {
         socketRef.current.send(JSON.stringify({
           type: "read",
           sender: selectedReceiver

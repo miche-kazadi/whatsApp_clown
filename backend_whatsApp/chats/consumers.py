@@ -120,7 +120,10 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({"type": "typing", **event}))
 
     async def message_read(self, event):
-        await self.send(text_data=json.dumps({"type": "read", **event}))
+        await self.send(text_data=json.dumps({
+            "type": "message_read",
+            **event
+            }))
 
     async def websocket_receive(self, message):
         await super().websocket_receive(message)
