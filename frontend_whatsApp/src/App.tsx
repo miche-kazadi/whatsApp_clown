@@ -1,245 +1,213 @@
-import { useEffect, useState, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { jwtDecode } from 'jwt-decode';
-import api from './api';
+import React, { useState, useEffect, useMemo, useRef } from "react";
+import StoryList from "./components/storyList";
+import StoryViewer from "./components/storyViewer";
+import AddStory from "./components/addStory";
+import Sidebar from "./components/Sidebar";
+import ChatHeader from "./components/ChatHeader";
+import MessageList from "./components/messageList";
+import MessageInput from "./components/MessageInput";
 
-interface DecodedToken {
+// Interfaces pour le typage TypeScript
+interface User {
+  id: number | string;
   username: string;
-  user_id: number;
+  avatar?: string;
 }
 
-interface Message {
-  id?: number;
-  sender: number;
-  receiver?: number;
-  content: string;
-  is_read?: boolean;
+interface Story {
+  id: number;
+  image: string;
 }
 
-function App() {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [content, setContent] = useState('');
-  const [username, setUsername] = useState('');
-  const [typingUsers, setTypingUsers] = useState<string | null>(null);
-  const [currentUserId, setCurrentUserId] = useState<number | null>(null);
-  const [selectedReceiver, setSelectedReceiver] = useState<number | null>(null);
-  const [users, setUsers] = useState<any[]>([]);
+const ChatContainer = () => {
+  // États pour les Stories
+  const [openStories, setOpenStories] = useState<Story[] | null>(null);
 
+  // États pour le Chat
+  const [users, setUsers] = useState<User[]>([]);
+  const [selectedReceiver, setSelectedReceiver] = useState<number | string | null>(null);
+  const [messages, setMessages] = useState<any[]>([]);
+  const [content, setContent] = useState("");
+  const [typingUsers, setTypingUsers] = useState<any>(null);
+
+  const username = localStorage.getItem("username") || "Utilisateur";
+  const currentUserId = localStorage.getItem("user_id") || "";
   const socketRef = useRef<WebSocket | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement | null>(null);
-  const selectedReceiverRef = useRef<number | null>(null);
-  const navigate = useNavigate();
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // 1. Initialisation : Auth, Users et WebSocket
-  useEffect(() => {
-    const token = localStorage.getItem('access_token');
-    if (!token) {
-      navigate('/login');
-      return;
+  // 1. Chargement des utilisateurs (Contacts)
+  const fetchUsers = async () => {
+    try {
+      const token = localStorage.getItem("access_token") || localStorage.getItem("token");
+      if (!token) return;
+
+      const response = await fetch("http://127.0.0.1:8000/api/users/", {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+      const data = await response.json();
+      setUsers(Array.isArray(data) ? data : (data.results || []));
+    } catch (error) {
+      console.error("Erreur récupération utilisateurs:", error);
     }
+  };
 
-    const decoded = jwtDecode<DecodedToken>(token);
-    setUsername(decoded.username);
-    setCurrentUserId(decoded.user_id);
+  useEffect(() => { fetchUsers(); }, []);
 
-    const userIdFromToken = decoded.user_id;
-
-    api.get('users/')
-      .then(res => setUsers(res.data))
-      .catch(console.error);
-
-    if (!socketRef.current) {
-      const socket = new WebSocket(`ws://127.0.0.1:8000/ws/chat/?token=${token}`);
-      socketRef.current = socket;
-
-      socket.onopen = () => console.log("✅ WebSocket connecté");
-      socket.onerror = (error) => console.log("❌ Erreur WebSocket", error);
-      socket.onclose = () => console.log("⚠️ WebSocket fermé");
-
-      socket.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        console.log("État actuel de messages :", messages);
-        console.log("Message reçu :", data);
-
-        if (data.type === "typing_event") {
-          console.log("Mise à jour des traits : lecture détectée");
-          setTypingUsers(data.sender);
-          setTimeout(() => setTypingUsers(null), 20000);
-        }
-        
-        else if (data.type === "message_read") {
-          console.log("DEBUG: Tentative de mise à jour");
-          console.log("DEBUG: Mon ID:", userIdFromToken);
-          console.log("DEBUG: Lecteur:", data.reader);
-          console.log("DEBUG: Nombre de messages en mémoire:", messages.length);
-          console.log(`Mise à jour : lecture détectée par ${data.reader}`);
-          setMessages((prev) =>
-            prev.map((msg) => {
-              const isMyMessage = Number(msg.sender) === Number(userIdFromToken);
-              const isTargetReader = Number(msg.receiver) === Number(data.reader);
-
-              if (isMyMessage && isTargetReader) {
-                return { ...msg, is_read: true };
-              }
-              return msg;
-            })
-          );
-        } 
-        else if (data.type === "message") {
-          const newMessage ={
-            ...data ,
-            sender: data.sender,
-            receiver: data.receiver,
-            content: data.message,
-            is_read: false
-          };
-          if (newMessage.sender === selectedReceiverRef.current || newMessage.receiver === selectedReceiverRef.current) {
-            setMessages((prev) => [...prev, newMessage]);
-          }
-        }
-      };
-    }
-
-    // On ne ferme pas le socket au démontage pour éviter les coupures intempestives en dev
-    // return () => socketRef.current?.close();
-  }, [navigate]);
-
-  // 2. Gestion du changement de contact
+  // 2. Gestion de l'historique et de la connexion WebSocket
   useEffect(() => {
-    if (selectedReceiver !== null) {
-      selectedReceiverRef.current = selectedReceiver;
+    if (!selectedReceiver) return;
 
-      // Charger l'historique
-      api.get(`messages/?receiver=${selectedReceiver}`)
-        .then(res => setMessages(res.data))
-        .catch(err => console.error("Erreur chargement messages", err));
+    const token = localStorage.getItem("access_token") || localStorage.getItem("token");
 
-      // Marquer comme lu via WebSocket
-      if (selectedReceiver && socketRef.current?.readyState === WebSocket.OPEN) {
-        socketRef.current.send(JSON.stringify({
-          type: "read",
-          sender: selectedReceiver
-        }));
+    const fetchHistory = async () => {
+      try {
+        const response = await fetch(`http://127.0.0.1:8000/api/messages/?receiver=${selectedReceiver}`, {
+          headers: { "Authorization": `Bearer ${token}` }
+        });
+        const data = await response.json();
+        setMessages(data);
+      } catch (error) {
+        console.error("Erreur historique:", error);
       }
-    }
-  }, [selectedReceiver]);
+    };
+    fetchHistory();
 
-  // 3. Scroll automatique
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    const socketUrl = `ws://127.0.0.1:8000/ws/chat/${selectedReceiver}/?token=${token}`;
+    socketRef.current = new WebSocket(socketUrl);
 
+    socketRef.current.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      setMessages((prev) => {
+        const isDuplicate = prev.find(m => m.id === data.id);
+        if (isDuplicate) return prev;
+        if (
+          String(data.sender) === String(selectedReceiver) ||
+          (String(data.sender) === String(currentUserId) && String(data.receiver) === String(selectedReceiver))
+        ) {
+          return [...prev, data];
+        }
+        return prev;
+      });
+    };
+
+    return () => {
+      socketRef.current?.close();
+    };
+  }, [selectedReceiver, currentUserId]);
+
+  // 3. Envoi de message
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedReceiver || !content.trim()) return;
+    if (!content.trim() || !selectedReceiver) return;
 
-    const socket = socketRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      console.error("Le socket n'est pas prêt. État actuel :", socket?.readyState);
-      return;
+    const token = localStorage.getItem("access_token") || localStorage.getItem("token");
+
+    try {
+      const response = await fetch("http://127.0.0.1:8000/api/messages/", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          receiver: selectedReceiver,
+          content: content
+        }),
+      });
+
+      if (response.ok) {
+        const savedMessage = await response.json();
+        setMessages((prev) => [...prev, savedMessage]);
+        if (socketRef.current?.readyState === WebSocket.OPEN) {
+          socketRef.current.send(JSON.stringify(savedMessage));
+        }
+        setContent("");
+      }
+    } catch (err) {
+      console.error("Erreur envoi:", err);
     }
-
-    socket.send(JSON.stringify({
-      type: "message",
-      message: content,
-      receiver: selectedReceiver
-    }));
-
-    setContent('');
   };
+
+  const activeUser = useMemo(() => {
+    if (!users || !Array.isArray(users)) return null;
+    return users.find(u => String(u.id) === String(selectedReceiver)) || null;
+  }, [users, selectedReceiver]);
 
   const handleLogout = () => {
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
-    if (socketRef.current) socketRef.current.close();
-    navigate('/login');
+    localStorage.clear();
+    window.location.href = "/login";
   };
 
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages]);
+
   return (
-    <div className="container-fluid vh-100 bg-light p-0">
+    <div className="container-fluid vh-100 bg-light p-0 overflow-hidden">
       <div className="row h-100 g-0">
-        {/* SIDEBAR */}
-        <div className="col-md-4 col-lg-3 d-flex flex-column border-end bg-white shadow-sm">
-          <div className="p-3 bg-dark text-white d-flex align-items-center justify-content-between">
-            <h5 className="m-0">WhatsApp Clone</h5>
-            <small className="badge bg-success">{username}</small>
+
+        {/* COLONNE GAUCHE : Sidebar + Stories */}
+        <div className={`col-md-4 col-lg-3 h-100 border-end bg-white d-flex flex-column ${selectedReceiver ? 'd-none d-md-flex' : 'd-flex'}`}>
+
+          {/* Header Profil */}
+          <div className="p-3 border-bottom d-flex justify-content-between align-items-center bg-light">
+            <span className="fw-bold text-primary">{username}</span>
+            <button onClick={handleLogout} className="btn btn-sm btn-outline-danger">Quitter</button>
           </div>
-          <div className="p-2 bg-light border-bottom text-muted small fw-bold">CONTACTS</div>
-          <div className="list-group list-group-flush overflow-auto flex-grow-1">
-            {users.map((user) => (
-              <button
-                key={user.id}
-                className={`list-group-item list-group-item-action p-3 border-0 ${selectedReceiver === user.id ? 'bg-primary text-white' : ''}`}
-                onClick={() => setSelectedReceiver(user.id)}
-              >
-                <div className="d-flex align-items-center">
-                  <div className="rounded-circle bg-secondary text-white d-flex align-items-center justify-content-center me-3" style={{ width: 40, height: 40 }}>
-                    {user.username[0].toUpperCase()}
-                  </div>
-                  <strong>{user.username}</strong>
-                </div>
-              </button>
-            ))}
+
+          {/* SECTION STORIES : Horizontale */}
+          <div className="p-2 border-bottom bg-white overflow-hidden">
+            <div className="d-flex align-items-center gap-2 overflow-auto py-1" style={{ scrollbarWidth: 'none' }}>
+              <AddStory />
+              <div className="vr mx-1" style={{ height: '40px', opacity: 0.2 }}></div>
+              <StoryList onOpenStories={setOpenStories} />
+            </div>
           </div>
-          <div className="p-3 border-top bg-white">
-            <button className="btn btn-outline-danger btn-sm w-100" onClick={handleLogout}>Déconnexion</button>
+
+          {/* LISTE DES CONTACTS (Reste de la place) */}
+          <div className="flex-grow-1 overflow-auto">
+            <Sidebar
+              users={users}
+              selectedReceiver={selectedReceiver}
+              setSelectedReceiver={setSelectedReceiver}
+              username={username}
+              handleLogout={handleLogout}
+            />
           </div>
         </div>
 
-        {/* CHAT AREA */}
-        <div className="col-md-8 col-lg-9 d-flex flex-column" style={{ backgroundColor: '#e5ddd5' }}>
+        {/* COLONNE DROITE : Zone de Chat */}
+        <div className={`col-md-8 col-lg-9 d-flex flex-column h-100 ${!selectedReceiver ? 'd-none d-md-flex' : 'd-flex'}`} style={{ backgroundColor: "#e5ddd5" }}>
           {selectedReceiver ? (
             <>
-              <div className="p-3 bg-white shadow-sm d-flex align-items-center justify-content-between">
-                <div>
-                  <h6 className="m-0">Discussion avec : <strong>{users.find(u => u.id === selectedReceiver)?.username}</strong></h6>
-                  {typingUsers && <small className="text-success anim-fade">{typingUsers} est en train d'écrire...</small>}
-                </div>
-              </div>
-
-              <div className="flex-grow-1 p-4 overflow-auto d-flex flex-column">
-                {messages.map((msg, index) => {
-                  const isMyMessage = Number(msg.sender) === Number(currentUserId);
-                  return (
-                    <div key={index} className={`d-flex mb-2 ${isMyMessage ? 'justify-content-end' : 'justify-content-start'}`}>
-                      <div className={`p-2 px-3 rounded-3 shadow-sm ${isMyMessage ? 'bg-success text-white' : 'bg-white text-dark'}`} style={{ maxWidth: '70%' }}>
-                        <div>{msg.content}</div>
-                        <div className="text-end" style={{ fontSize: '10px', marginTop: '2px' }}>
-                          {isMyMessage && (msg.is_read ? "✔✔" : "✔")}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
+              <ChatHeader selectedUser={activeUser || { id: 0, username: "..." }} typingUsers={typingUsers} />
+              <div className="flex-grow-1 overflow-auto p-3">
+                <MessageList messages={messages} currentUserId={currentUserId} messagesEndRef={messagesEndRef} />
                 <div ref={messagesEndRef} />
               </div>
-
-              <form onSubmit={sendMessage} className="p-3 bg-white border-top d-flex gap-2">
-                <input
-                  className="form-control rounded-pill border-light bg-light px-4"
-                  placeholder="Tapez un message..."
-                  value={content}
-                  onChange={(e) => {
-                    setContent(e.target.value);
-                    if (socketRef.current?.readyState === WebSocket.OPEN && selectedReceiver) {
-                      socketRef.current.send(JSON.stringify({ type: "typing", receiver: selectedReceiver }));
-                    }
-                  }}
-                />
-                <button type="submit" className="btn btn-success rounded-circle shadow-sm" style={{ width: 45, height: 45 }}>
-                  <i className="bi bi-send-fill"></i>
-                </button>
-              </form>
+              <MessageInput content={content} setContent={setContent} sendMessage={sendMessage} socket={socketRef.current} selectedReceiver={selectedReceiver} />
             </>
           ) : (
-            <div className="h-100 d-flex align-items-center justify-content-center text-muted">
-              Sélectionnez un contact pour commencer à discuter
+            <div className="h-100 d-flex flex-column align-items-center justify-content-center text-muted p-5 text-center">
+              <i className="bi bi-chat-left-text mb-3" style={{ fontSize: "4rem", opacity: 0.3 }}></i>
+              <h4>Sélectionnez une discussion</h4>
+              <p>Cliquez sur un contact à gauche pour commencer à envoyer des messages.</p>
             </div>
           )}
         </div>
       </div>
+
+      {/* Viewer de stories (Overlay Plein Écran) */}
+      {openStories && (
+        <StoryViewer
+          stories={openStories}
+          onClose={() => setOpenStories(null)}
+        />
+      )}
     </div>
   );
-}
+};
 
-export default App;
+export default ChatContainer;

@@ -41,6 +41,9 @@ export default function Register() {
 
           <button className="btn btn-success w-100" type="submit">S'inscrire</button>
         </form>
+        <p className="text-center">
+          deja un compte ? <a href="/login" className="text-decoration-none">Connecte-toi ici</a>
+        </p>
       </div>
     </div>
   );
